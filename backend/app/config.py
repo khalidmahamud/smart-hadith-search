@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
+import os
 
 
 class Settings(BaseSettings):
@@ -17,9 +18,12 @@ class Settings(BaseSettings):
     )
 
     # CORS (Cross-Origin Resource Sharing)
-    # Your Next.js frontend runs on localhost:3000
-    # Without this, browsers block the frontend from calling localhost:8000
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # Set CORS_ORIGINS env var as comma-separated list for production
+    # Example: CORS_ORIGINS=https://your-app.vercel.app,http://localhost:3000
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        # Production origins will be added via environment variable
+    ]
 
     # API versioning - all endpoints will be /api/v1/...
     # Later you can add /api/v2/ without breaking existing clients
@@ -27,6 +31,13 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"  # Optionally load from .env file
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Parse CORS_ORIGINS from environment if set as comma-separated string
+        cors_env = os.getenv("CORS_ORIGINS")
+        if cors_env:
+            self.CORS_ORIGINS = [origin.strip() for origin in cors_env.split(",")]
 
 
 # Create a singleton instance - import this everywhere
