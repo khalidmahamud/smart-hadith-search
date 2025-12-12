@@ -27,7 +27,7 @@ app = FastAPI(
 # Solution: Tell FastAPI which domains are allowed to call us
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,  # ["http://localhost:3000"]
+    allow_origins=settings.cors_origins_list,  # Parsed from comma-separated env var
     allow_credentials=True,  # Allow cookies/auth headers
     allow_methods=["GET", "POST"],  # Which HTTP methods to allow
     allow_headers=["*"],  # Allow all headers

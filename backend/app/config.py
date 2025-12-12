@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
-import os
 
 
 class Settings(BaseSettings):
@@ -10,35 +9,25 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Database path - points to your existing sqlite.db
-    # Path(__file__) = this config.py file
-    # .parent.parent = go up 2 levels (app/ -> backend/)
-    # Then into database/sqlite.db
     DATABASE_PATH: str = str(
         Path(__file__).parent.parent / "database" / "sqlite.db"
     )
 
-    # CORS (Cross-Origin Resource Sharing)
-    # Set CORS_ORIGINS env var as comma-separated list for production
+    # CORS - accepts comma-separated string or JSON array from env
     # Example: CORS_ORIGINS=https://your-app.vercel.app,http://localhost:3000
-    CORS_ORIGINS: list[str] = [
-        "http://localhost:3000",
-        # Production origins will be added via environment variable
-    ]
+    CORS_ORIGINS: str = "http://localhost:3000"
 
-    # API versioning - all endpoints will be /api/v1/...
-    # Later you can add /api/v2/ without breaking existing clients
+    # API versioning
     API_V1_PREFIX: str = "/api/v1"
 
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS_ORIGINS as comma-separated list"""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+
     class Config:
-        env_file = ".env"  # Optionally load from .env file
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # Parse CORS_ORIGINS from environment if set as comma-separated string
-        cors_env = os.getenv("CORS_ORIGINS")
-        if cors_env:
-            self.CORS_ORIGINS = [origin.strip() for origin in cors_env.split(",")]
+        env_file = ".env"
 
 
-# Create a singleton instance - import this everywhere
+# Create a singleton instance
 settings = Settings()
