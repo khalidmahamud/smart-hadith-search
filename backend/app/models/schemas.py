@@ -42,14 +42,6 @@ class SearchRequest(BaseModel):
 # ============================================
 
 
-class QueryExpansion(BaseModel):
-    """Shows how the search query was expanded by phonetic/fuzzy matching"""
-
-    original: list[str]  # Original query words
-    expanded: list[str]  # Expanded terms (includes fuzzy matches)
-    language: str  # Detected language
-
-
 class HadithResult(BaseModel):
     """Single hadith in search results"""
 
@@ -65,12 +57,13 @@ class HadithResult(BaseModel):
     en_narrator: Optional[str]
     ar_narrator: Optional[str]
     bn_narrator: Optional[str]
+    ur_narrator: Optional[str]
     book_title: str
     book_title_bn: Optional[str]
     book_slug: str
     grade_text: Optional[str]
     grade_text_bn: Optional[str]
-    score: float  # BM25 relevance score from FTS5
+    score: float  # Hybrid search relevance score
 
 
 class SearchResponse(BaseModel):
@@ -78,7 +71,6 @@ class SearchResponse(BaseModel):
 
     query: str  # Echo back the original query
     query_lang: str  # Detected language
-    expansion: QueryExpansion  # How query was expanded
     count: int  # Number of results
     results: list[HadithResult]  # The actual hadiths
 
@@ -100,9 +92,12 @@ class HadithDetail(BaseModel):
     ur_text: Optional[str]
     ur_narrator: Optional[str]
     book_title: str
+    book_title_bn: Optional[str]
     book_slug: str
-    chapter_title: str
+    chapter_title: Optional[str]
+    chapter_title_bn: Optional[str]
     grade_text: Optional[str]
+    grade_text_bn: Optional[str]
 
 
 class Book(BaseModel):

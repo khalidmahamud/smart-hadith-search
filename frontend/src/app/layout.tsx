@@ -17,7 +17,7 @@ const notoNaskhArabic = Noto_Naskh_Arabic({
 
 export const metadata: Metadata = {
   title: 'Smart Hadith Search',
-  description: 'Search 26,742 hadiths in Arabic, English, Bengali, and Urdu with intelligent query expansion',
+  description: 'Search 26,742 hadiths in Arabic, English, Bengali, and Urdu with semantic search',
   keywords: ['hadith', 'search', 'islamic', 'arabic', 'quran', 'sunnah'],
 };
 

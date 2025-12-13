@@ -1,11 +1,5 @@
 // Types matching backend Pydantic schemas
 
-export interface QueryExpansion {
-  original: string[];
-  expanded: string[];
-  language: string;
-}
-
 export interface HadithResult {
   hadith_id: number;
   book_id: number;
@@ -19,6 +13,7 @@ export interface HadithResult {
   en_narrator: string | null;
   ar_narrator: string | null;
   bn_narrator: string | null;
+  ur_narrator: string | null;
   book_title: string;
   book_title_bn: string | null;
   book_slug: string;
@@ -30,7 +25,6 @@ export interface HadithResult {
 export interface SearchResponse {
   query: string;
   query_lang: string;
-  expansion: QueryExpansion;
   count: number;
   results: HadithResult[];
 }

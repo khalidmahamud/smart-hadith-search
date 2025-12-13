@@ -17,7 +17,7 @@ export default function HomePage() {
           Smart Hadith Search
         </h1>
         <p className="text-lg text-stone-500 mb-10 text-center max-w-lg leading-relaxed">
-          Search through 26,742 hadiths in Arabic, English, Bengali, and Urdu with intelligent query expansion
+          Search through 26,742 hadiths in Arabic, English, Bengali, and Urdu with semantic search
         </p>
 
         {/* Search Bar */}
@@ -29,11 +29,11 @@ export default function HomePage() {
         <div className="flex flex-wrap justify-center gap-x-8 gap-y-3 text-sm text-stone-500">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
-            <span>Phonetic matching</span>
+            <span>Semantic search</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
-            <span>Fuzzy search</span>
+            <span>Hybrid ranking</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
@@ -58,7 +58,7 @@ export default function HomePage() {
       {/* Footer */}
       <footer className="border-t border-stone-200 py-6">
         <p className="text-center text-sm text-stone-400">
-          Powered by FTS5 full-text search
+          Powered by pgvector semantic search
         </p>
       </footer>
     </main>

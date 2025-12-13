@@ -1,254 +1,425 @@
-# backend/search.py
+"""
+Hybrid Search Module for Smart Hadith Search
 
-import sqlite3
+This module implements semantic + full-text hybrid search using:
+- pgvector: Vector similarity search (semantic meaning)
+- PostgreSQL tsvector: Full-text search (keyword matching)
+- RRF (Reciprocal Rank Fusion): Combines both rankings
+
+How it works:
+1. User enters a query (e.g., "patience in hardship")
+2. Query is converted to an embedding vector
+3. Two parallel searches run:
+   - Semantic: Find hadiths with similar embeddings
+   - Full-text: Find hadiths containing the keywords
+4. Results are combined using RRF for final ranking
+"""
+
 import re
-from pathlib import Path
-from functools import lru_cache
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from rapidfuzz import fuzz, process
-
-ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / "database" / "sqlite.db"
+from app.config import settings
+from app.services.embeddings import generate_embedding
 
 
-def get_db():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+def detect_language(query: str) -> str:
+    """
+    Detect the primary language of a query.
 
+    Uses Unicode ranges to identify scripts:
+    - Arabic: U+0600-U+06FF
+    - Bengali: U+0980-U+09FF
+    - Default: English
 
-def phonetic_code(s: str) -> str:
-    if not s:
-        return ""
-    
-    s = s.lower().strip()
-    s = re.sub(r"[^a-z]", "", s)
-    
-    if len(s) < 2:
-        return s
-    
-    replacements = [
-        (r"gh", "g"), (r"kh", "k"), (r"sh", "s"), (r"th", "t"),
-        (r"dh", "d"), (r"zh", "z"), (r"ph", "f"), (r"qu", "k"),
-        (r"ee", "i"), (r"aa", "a"), (r"oo", "u"), (r"ou", "u"),
-        (r"ei", "i"), (r"ai", "a"), (r"ay", "a"),
-    ]
-    
-    result = s
-    for pattern, repl in replacements:
-        result = re.sub(pattern, repl, result)
-    
-    first = result[0]
-    rest = re.sub(r"[aeiou]", "", result[1:])
-    result = first + rest
-    result = re.sub(r"(.)\1+", r"\1", result)
-    
-    return result[:8]
+    Args:
+        query: User's search query
 
-
-def detect_language(text: str) -> str:
-    """Detect primary language of text."""
-    if re.search(r"[\u0600-\u06FF]", text):
-        if re.search(r"[\u0980-\u09FF]", text):
+    Returns:
+        Language code: 'ar', 'bn', or 'en'
+    """
+    if re.search(r"[\u0600-\u06FF]", query):
+        # Could be Arabic or Urdu (both use Arabic script)
+        if re.search(r"[\u0980-\u09FF]", query):
             return "bn"
-        return "ar"  # Could be Arabic or Urdu
-    if re.search(r"[\u0980-\u09FF]", text):
+        return "ar"
+    if re.search(r"[\u0980-\u09FF]", query):
         return "bn"
     return "en"
 
 
-@lru_cache(maxsize=1)
-def load_terms() -> dict:
-    """Load terms grouped by language."""
-    con = get_db()
-    cur = con.cursor()
-    cur.execute("SELECT term, language, phonetic FROM search_terms")
-    
-    terms = {"en": [], "ar": [], "bn": [], "ur": [], "all": []}
-    phonetic_map = {}
-    
-    for row in cur.fetchall():
-        term, lang, phon = row
-        terms[lang].append(term)
-        terms["all"].append(term)
-        if phon:
-            phonetic_map[phon] = term
-    
-    con.close()
-    return {"terms": terms, "phonetic": phonetic_map}
+async def hybrid_search(
+    db: AsyncSession,
+    query: str,
+    book_id: int | None = None,
+    limit: int = 20,
+) -> dict:
+    """
+    Perform hybrid search combining semantic and full-text search.
 
+    This is the main search function that:
+    1. Generates an embedding for the query
+    2. Calls the hybrid_search SQL function
+    3. Fetches full hadith details for the results
 
-def expand_query(query: str) -> dict:
-    """Find phonetic and fuzzy matches for query words."""
-    data = load_terms()
-    words = [w for w in query.split() if len(w) >= 2]
-    
+    Args:
+        db: Async database session
+        query: User's search query
+        book_id: Optional filter by book
+        limit: Maximum results to return
+
+    Returns:
+        Dictionary with query info and ranked results
+    """
+    query = query.strip()
+    if not query:
+        return {"query": "", "query_lang": "en", "count": 0, "results": []}
+
     query_lang = detect_language(query)
-    
-    expansion = {
-        "original": words,
-        "expanded": set(words),
-        "language": query_lang,
-    }
-    
-    for word in words:
-        word_lower = word.lower()
-        
-        if query_lang == "en":
-            # Phonetic matches for English
-            word_phon = phonetic_code(word)
-            if word_phon:
-                for phon, term in data["phonetic"].items():
-                    if phon and (phon == word_phon or phon.startswith(word_phon) or word_phon.startswith(phon)):
-                        expansion["expanded"].add(term)
-            
-            # Fuzzy matches for English
-            matches = process.extract(word_lower, data["terms"]["en"], scorer=fuzz.ratio, score_cutoff=75, limit=5)
-            for match, score, _ in matches:
-                expansion["expanded"].add(match)
-        else:
-            # For non-English, use fuzzy matching on respective language terms
-            lang_terms = data["terms"].get(query_lang, [])
-            if lang_terms:
-                matches = process.extract(word, lang_terms, scorer=fuzz.ratio, score_cutoff=70, limit=5)
-                for match, score, _ in matches:
-                    expansion["expanded"].add(match)
-    
-    expansion["expanded"] = list(expansion["expanded"])
-    return expansion
 
+    # Generate embedding for semantic search
+    query_embedding = generate_embedding(query)
 
-def search(query: str, lang: str = None, book_id: int = None, limit: int = 20) -> dict:
-    """
-    Search hadiths using FTS5 with query expansion.
-    """
-    con = get_db()
-    cur = con.cursor()
-    
-    expansion = expand_query(query)
-    all_terms = expansion["expanded"]
-    query_lang = expansion["language"]
-    
-    if not all_terms:
-        return {"query": query, "expansion": expansion, "results": []}
-    
-    # Build FTS query
-    fts_terms = " OR ".join(f'"{t}"' for t in all_terms)
-    
-    try:
-        sql = """
-            SELECT 
-                h.hadith_id,
-                h.book_id,
-                h.chapter_id,
-                h.hadith_number,
-                h.grade_id,
-                h.en_text,
-                h.ar_text,
-                h.bn_text,
-                h.ur_text,
-                h.en_narrator,
-                h.ar_narrator,
-                h.bn_narrator,
-                b.en_title as book_title,
-                b.bn_title as book_title_bn,
-                b.slug as book_slug,
-                g.en_text as grade_text,
-                g.bn_text as grade_text_bn,
-                bm25(hadiths_fts) as score
-            FROM hadiths_fts
-            JOIN hadiths h ON h.hadith_id = hadiths_fts.rowid
-            JOIN books b ON b.book_id = h.book_id
-            LEFT JOIN grades g ON g.grade_id = h.grade_id
-            WHERE hadiths_fts MATCH ?
-        """
-        params = [fts_terms]
-        
-        if book_id:
-            sql += " AND h.book_id = ?"
-            params.append(book_id)
-        
-        sql += " ORDER BY score LIMIT ?"
-        params.append(limit)
-        
-        cur.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
-        
-    except sqlite3.OperationalError as e:
-        print(f"FTS error: {e}")
-        rows = []
-    
-    con.close()
-    
+    if not query_embedding:
+        # Fallback to full-text only if embedding fails
+        return await fulltext_search(db, query, book_id, limit, query_lang)
+
+    # Format embedding as PostgreSQL array string
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+
+    # Call the hybrid_search function we defined in PostgreSQL
+    # Note: We embed the vector string directly since SQLAlchemy has issues with ::vector cast
+    sql = text(f"""
+        WITH ranked AS (
+            SELECT hadith_id, score
+            FROM hybrid_search(
+                :query_text,
+                '{embedding_str}'::vector,
+                :match_count,
+                :fulltext_weight,
+                :semantic_weight,
+                :rrf_k,
+                :book_id
+            )
+        )
+        SELECT
+            h.hadith_id,
+            h.book_id,
+            h.chapter_id,
+            h.hadith_number,
+            h.grade_id,
+            h.en_text,
+            h.ar_text,
+            h.bn_text,
+            h.ur_text,
+            h.en_narrator,
+            h.ar_narrator,
+            h.bn_narrator,
+            h.ur_narrator,
+            b.en_title as book_title,
+            b.bn_title as book_title_bn,
+            b.slug as book_slug,
+            g.en_text as grade_text,
+            g.bn_text as grade_text_bn,
+            r.score
+        FROM ranked r
+        JOIN hadiths h ON h.hadith_id = r.hadith_id
+        JOIN books b ON b.book_id = h.book_id
+        LEFT JOIN grades g ON g.grade_id = h.grade_id
+        ORDER BY r.score DESC
+    """)
+
+    result = await db.execute(sql, {
+        "query_text": query,
+        "match_count": limit,
+        "fulltext_weight": settings.FULLTEXT_WEIGHT,
+        "semantic_weight": settings.SEMANTIC_WEIGHT,
+        "rrf_k": settings.RRF_K,
+        "book_id": book_id,
+    })
+
+    rows = [dict(row._mapping) for row in result.fetchall()]
+
     return {
         "query": query,
         "query_lang": query_lang,
-        "expansion": expansion,
         "count": len(rows),
         "results": rows,
     }
 
 
-def get_hadith(hadith_id: int) -> dict | None:
-    """Get single hadith by ID."""
-    con = get_db()
-    cur = con.cursor()
-    
-    cur.execute("""
-        SELECT 
+async def semantic_search(
+    db: AsyncSession,
+    query: str,
+    book_id: int | None = None,
+    limit: int = 20,
+) -> dict:
+    """
+    Pure semantic search (embedding similarity only).
+
+    Use this when you want meaning-based search without keyword matching.
+    Useful for conceptual queries like "being kind to parents".
+
+    Args:
+        db: Async database session
+        query: User's search query
+        book_id: Optional filter by book
+        limit: Maximum results to return
+
+    Returns:
+        Dictionary with query info and ranked results
+    """
+    query = query.strip()
+    if not query:
+        return {"query": "", "query_lang": "en", "count": 0, "results": []}
+
+    query_lang = detect_language(query)
+    query_embedding = generate_embedding(query)
+
+    if not query_embedding:
+        return {"query": query, "query_lang": query_lang, "count": 0, "results": []}
+
+    # Format embedding as PostgreSQL array string
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+
+    sql = text(f"""
+        WITH ranked AS (
+            SELECT hadith_id, similarity
+            FROM semantic_search(
+                '{embedding_str}'::vector,
+                :match_count,
+                :book_id
+            )
+        )
+        SELECT
+            h.hadith_id,
+            h.book_id,
+            h.chapter_id,
+            h.hadith_number,
+            h.grade_id,
+            h.en_text,
+            h.ar_text,
+            h.bn_text,
+            h.ur_text,
+            h.en_narrator,
+            h.ar_narrator,
+            h.bn_narrator,
+            h.ur_narrator,
+            b.en_title as book_title,
+            b.bn_title as book_title_bn,
+            b.slug as book_slug,
+            g.en_text as grade_text,
+            g.bn_text as grade_text_bn,
+            r.similarity as score
+        FROM ranked r
+        JOIN hadiths h ON h.hadith_id = r.hadith_id
+        JOIN books b ON b.book_id = h.book_id
+        LEFT JOIN grades g ON g.grade_id = h.grade_id
+        ORDER BY r.similarity DESC
+    """)
+
+    result = await db.execute(sql, {
+        "match_count": limit,
+        "book_id": book_id,
+    })
+
+    rows = [dict(row._mapping) for row in result.fetchall()]
+
+    return {
+        "query": query,
+        "query_lang": query_lang,
+        "count": len(rows),
+        "results": rows,
+    }
+
+
+async def fulltext_search(
+    db: AsyncSession,
+    query: str,
+    book_id: int | None = None,
+    limit: int = 20,
+    query_lang: str = "en",
+) -> dict:
+    """
+    Pure full-text search (keyword matching only).
+
+    Fallback when embedding generation fails or for exact phrase matching.
+
+    Args:
+        db: Async database session
+        query: User's search query
+        book_id: Optional filter by book
+        limit: Maximum results to return
+        query_lang: Detected query language
+
+    Returns:
+        Dictionary with query info and ranked results
+    """
+    # Choose the appropriate tsvector column based on language
+    fts_column = "fts_ar" if query_lang == "ar" else "fts_en"
+    ts_config = "simple" if query_lang == "ar" else "english"
+
+    sql = text(f"""
+        SELECT
+            h.hadith_id,
+            h.book_id,
+            h.chapter_id,
+            h.hadith_number,
+            h.grade_id,
+            h.en_text,
+            h.ar_text,
+            h.bn_text,
+            h.ur_text,
+            h.en_narrator,
+            h.ar_narrator,
+            h.bn_narrator,
+            h.ur_narrator,
+            b.en_title as book_title,
+            b.bn_title as book_title_bn,
+            b.slug as book_slug,
+            g.en_text as grade_text,
+            g.bn_text as grade_text_bn,
+            ts_rank_cd(h.{fts_column}, plainto_tsquery('{ts_config}', :query)) as score
+        FROM hadiths h
+        JOIN books b ON b.book_id = h.book_id
+        LEFT JOIN grades g ON g.grade_id = h.grade_id
+        WHERE h.{fts_column} @@ plainto_tsquery('{ts_config}', :query)
+          AND (:book_id IS NULL OR h.book_id = :book_id)
+        ORDER BY score DESC
+        LIMIT :limit
+    """)
+
+    result = await db.execute(sql, {
+        "query": query,
+        "book_id": book_id,
+        "limit": limit,
+    })
+
+    rows = [dict(row._mapping) for row in result.fetchall()]
+
+    return {
+        "query": query,
+        "query_lang": query_lang,
+        "count": len(rows),
+        "results": rows,
+    }
+
+
+async def get_hadith(db: AsyncSession, hadith_id: int) -> dict | None:
+    """
+    Get a single hadith by ID with full details.
+
+    Args:
+        db: Async database session
+        hadith_id: The hadith's primary key
+
+    Returns:
+        Dictionary with hadith details or None if not found
+    """
+    sql = text("""
+        SELECT
             h.*,
             b.en_title as book_title,
+            b.bn_title as book_title_bn,
             b.slug as book_slug,
             c.en_title as chapter_title,
-            g.en_text as grade_text
+            c.bn_title as chapter_title_bn,
+            g.en_text as grade_text,
+            g.bn_text as grade_text_bn
         FROM hadiths h
         JOIN books b ON b.book_id = h.book_id
         JOIN chapters c ON c.chapter_id = h.chapter_id
         LEFT JOIN grades g ON g.grade_id = h.grade_id
-        WHERE h.hadith_id = ?
-    """, (hadith_id,))
-    
-    row = cur.fetchone()
-    con.close()
-    
-    return dict(row) if row else None
+        WHERE h.hadith_id = :hadith_id
+    """)
+
+    result = await db.execute(sql, {"hadith_id": hadith_id})
+    row = result.fetchone()
+
+    if row:
+        row_dict = dict(row._mapping)
+        # Remove the embedding from response (too large, not needed)
+        row_dict.pop("embedding", None)
+        row_dict.pop("fts_en", None)
+        row_dict.pop("fts_ar", None)
+        return row_dict
+    return None
 
 
-def get_book_hadiths(book_id: int, chapter_id: int = None, page: int = 1, per_page: int = 50) -> dict:
-    """Get hadiths by book with pagination."""
-    con = get_db()
-    cur = con.cursor()
-    
+async def get_book_hadiths(
+    db: AsyncSession,
+    book_id: int,
+    chapter_id: int | None = None,
+    page: int = 1,
+    per_page: int = 50,
+) -> dict:
+    """
+    Get hadiths by book with pagination.
+
+    Args:
+        db: Async database session
+        book_id: Book to fetch from
+        chapter_id: Optional chapter filter
+        page: Page number (1-indexed)
+        per_page: Results per page
+
+    Returns:
+        Dictionary with paginated results and metadata
+    """
     offset = (page - 1) * per_page
-    
-    sql = """
-        SELECT h.*, g.en_text as grade_text
+
+    # Count total
+    count_sql = text("""
+        SELECT COUNT(*)
+        FROM hadiths h
+        WHERE h.book_id = :book_id
+          AND (:chapter_id IS NULL OR h.chapter_id = :chapter_id)
+    """)
+    count_result = await db.execute(count_sql, {
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+    })
+    total = count_result.scalar()
+
+    # Fetch page
+    sql = text("""
+        SELECT
+            h.hadith_id,
+            h.book_id,
+            h.chapter_id,
+            h.hadith_number,
+            h.grade_id,
+            h.en_text,
+            h.ar_text,
+            h.bn_text,
+            h.ur_text,
+            h.en_narrator,
+            h.ar_narrator,
+            h.bn_narrator,
+            h.ur_narrator,
+            g.en_text as grade_text,
+            g.bn_text as grade_text_bn
         FROM hadiths h
         LEFT JOIN grades g ON g.grade_id = h.grade_id
-        WHERE h.book_id = ?
-    """
-    params = [book_id]
-    
-    if chapter_id:
-        sql += " AND h.chapter_id = ?"
-        params.append(chapter_id)
-    
-    count_sql = sql.replace("SELECT h.*, g.en_text as grade_text", "SELECT COUNT(*)")
-    cur.execute(count_sql, params)
-    total = cur.fetchone()[0]
-    
-    sql += " ORDER BY h.hadith_number LIMIT ? OFFSET ?"
-    params.extend([per_page, offset])
-    
-    cur.execute(sql, params)
-    rows = [dict(r) for r in cur.fetchall()]
-    
-    con.close()
-    
+        WHERE h.book_id = :book_id
+          AND (:chapter_id IS NULL OR h.chapter_id = :chapter_id)
+        ORDER BY h.hadith_number
+        LIMIT :limit OFFSET :offset
+    """)
+
+    result = await db.execute(sql, {
+        "book_id": book_id,
+        "chapter_id": chapter_id,
+        "limit": per_page,
+        "offset": offset,
+    })
+
+    rows = [dict(row._mapping) for row in result.fetchall()]
+
     return {
         "results": rows,
         "total": total,
         "page": page,
         "per_page": per_page,
-        "pages": (total + per_page - 1) // per_page,
+        "pages": (total + per_page - 1) // per_page if total else 0,
     }

@@ -8,10 +8,25 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
 
-    # Database path - points to your existing sqlite.db
+    # Legacy SQLite path (kept for migration script)
     DATABASE_PATH: str = str(
         Path(__file__).parent.parent / "database" / "sqlite.db"
     )
+
+    # Supabase PostgreSQL connection
+    # Format: postgresql+asyncpg://postgres:[PASSWORD]@db.[PROJECT].supabase.co:6543/postgres
+    SUPABASE_DB_URL: str = ""
+
+    # Embedding model configuration
+    # Model: paraphrase-multilingual-MiniLM-L12-v2 (supports Arabic, Bengali, Urdu, English)
+    EMBEDDING_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    EMBEDDING_DIM: int = 384  # Output dimensions of the model
+
+    # Hybrid search tuning (Reciprocal Rank Fusion)
+    # Higher weight = more influence on final ranking
+    SEMANTIC_WEIGHT: float = 1.0   # Weight for semantic/embedding search
+    FULLTEXT_WEIGHT: float = 1.0   # Weight for keyword/full-text search
+    RRF_K: int = 60  # RRF constant (default 60, higher = more uniform blending)
 
     # CORS - accepts comma-separated string or JSON array from env
     # Example: CORS_ORIGINS=https://your-app.vercel.app,http://localhost:3000

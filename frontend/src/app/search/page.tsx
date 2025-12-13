@@ -66,19 +66,6 @@ function SearchContent() {
               <p className="text-stone-500">
                 for "<span className="text-stone-700">{results.query}</span>"
               </p>
-
-              {/* Query Expansion */}
-              {results.expansion.expanded.length > results.expansion.original.length && (
-                <div className="mt-3 flex items-start gap-2 text-sm">
-                  <span className="text-stone-400 shrink-0">Also searched:</span>
-                  <span className="text-stone-600">
-                    {results.expansion.expanded
-                      .filter((t) => !results.expansion.original.includes(t))
-                      .slice(0, 5)
-                      .join(', ')}
-                  </span>
-                </div>
-              )}
             </div>
 
             {/* Results List */}

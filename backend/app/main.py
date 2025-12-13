@@ -1,85 +1,96 @@
+"""
+Smart Hadith Search API
+
+FastAPI application with hybrid semantic + keyword search.
+"""
+
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import settings
+from app.db import async_session_maker
 from app.routers import search, hadiths, books
 
-# ============================================
-# CREATE THE FASTAPI APPLICATION
-# ============================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan handler.
+
+    Startup:
+    - Pre-load the embedding model (~440MB) so first search is fast
+    - Model stays in memory for the lifetime of the app
+
+    Shutdown:
+    - Clean up resources
+    """
+    # Startup: Load embedding model into memory
+    print("Starting up Smart Hadith Search API...")
+    print("Loading embedding model (this may take a moment on first run)...")
+
+    from app.services.embeddings import get_embedding_model
+    model = get_embedding_model()
+    print(f"Embedding model loaded: {settings.EMBEDDING_MODEL}")
+    print(f"Embedding dimension: {model.get_sentence_embedding_dimension()}")
+
+    yield  # App is running
+
+    # Shutdown
+    print("Shutting down...")
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Search 26,742 hadiths in Arabic, English, Bengali, and Urdu",
-    # These URLs are where the auto-generated docs live:
-    docs_url="/docs",  # Swagger UI - interactive API testing
-    redoc_url="/redoc",  # ReDoc - prettier documentation
+    description="Search 26,742 hadiths using semantic + keyword hybrid search. "
+                "Supports Arabic, English, Bengali, and Urdu.",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# ============================================
-# CONFIGURE CORS MIDDLEWARE
-# ============================================
-# CORS = Cross-Origin Resource Sharing
-#
-# Problem: Browsers block requests from one domain to another by default
-# Example: localhost:3000 (Next.js) → localhost:8000 (FastAPI) = BLOCKED!
-#
-# Solution: Tell FastAPI which domains are allowed to call us
+# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,  # Parsed from comma-separated env var
-    allow_credentials=True,  # Allow cookies/auth headers
-    allow_methods=["GET", "POST"],  # Which HTTP methods to allow
-    allow_headers=["*"],  # Allow all headers
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
-# ============================================
-# MOUNT ROUTERS
-# ============================================
-# Each router handles a group of related endpoints
-# prefix="/api/v1" means all routes get this prefix:
-#   - search.router has "/search" → becomes "/api/v1/search"
-#   - hadiths.router has "/hadiths/{id}" → becomes "/api/v1/hadiths/{id}"
-#
-# tags are for grouping in the /docs UI
+# Mount routers
 app.include_router(
     search.router, prefix=settings.API_V1_PREFIX, tags=["Search"]
 )
 app.include_router(
     hadiths.router, prefix=settings.API_V1_PREFIX, tags=["Hadiths"]
 )
-app.include_router(books.router, prefix=settings.API_V1_PREFIX, tags=["Books"])
+app.include_router(
+    books.router, prefix=settings.API_V1_PREFIX, tags=["Books"]
+)
 
 
-# ============================================
-# HEALTH CHECK ENDPOINT
-# ============================================
-# This is a simple endpoint to check if the API is running
-# and can connect to the database. Useful for:
-# - Deployment health checks (Render pings this)
-# - Monitoring services
-# - Quick debugging
 @app.get("/health", tags=["Health"])
-def health_check():
-    """Check if API and database are working"""
-    import sys
-    from pathlib import Path
+async def health_check():
+    """
+    Check if API and database are working.
 
-    # Add backend directory to path so we can import search.py
-    backend_path = Path(__file__).parent.parent
-    sys.path.insert(0, str(backend_path))
-    from search import get_db
-
+    Used by deployment platforms for health monitoring.
+    """
     try:
-        con = get_db()
-        cur = con.cursor()
-        cur.execute("SELECT COUNT(*) FROM hadiths")
-        count = cur.fetchone()[0]
-        con.close()
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "total_hadiths": count,
-        }
+        async with async_session_maker() as session:
+            result = await session.execute(text("SELECT COUNT(*) FROM hadiths"))
+            count = result.scalar()
+            return {
+                "status": "healthy",
+                "database": "connected",
+                "total_hadiths": count,
+            }
     except Exception as e:
-        return {"status": "unhealthy", "database": "error", "error": str(e)}
+        return {
+            "status": "unhealthy",
+            "database": "error",
+            "error": str(e),
+        }

@@ -12,10 +12,11 @@ env/
 dist/
 build/
 
-# Environment files
+# Environment files (NEVER commit these - contain secrets)
 .env
 .env.local
 .env.*.local
+*.env
 
 # IDEs
 .idea/
@@ -27,7 +28,24 @@ build/
 .DS_Store
 Thumbs.db
 
-# Database files tracked via Git LFS (see .gitattributes)
+# Database files
+backend/database/sqlite.db
+backend/database/sqlite.db-wal
+backend/database/sqlite.db-shm
+
+# Embeddings cache (large file, regenerate with migration script)
+backend/database/embeddings_cache.npy
+
+# Backup files
+*.backup
+*.bak
+backup/
+
+# Old/deprecated scripts (keep locally, don't commit)
+backend/scripts/build_search_index.py
 
 # Logs
 *.log
+
+# Model cache (downloaded automatically)
+.cache/
