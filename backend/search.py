@@ -368,21 +368,26 @@ async def get_book_hadiths(
     """
     offset = (page - 1) * per_page
 
+    # Build WHERE clause dynamically (asyncpg can't infer NULL parameter types)
+    where_clause = "h.book_id = :book_id"
+    params = {"book_id": book_id}
+
+    if chapter_id is not None:
+        where_clause += " AND h.chapter_id = :chapter_id"
+        params["chapter_id"] = chapter_id
+
     # Count total
-    count_sql = text("""
+    count_sql = text(f"""
         SELECT COUNT(*)
         FROM hadiths h
-        WHERE h.book_id = :book_id
-          AND (:chapter_id IS NULL OR h.chapter_id = :chapter_id)
+        WHERE {where_clause}
     """)
-    count_result = await db.execute(count_sql, {
-        "book_id": book_id,
-        "chapter_id": chapter_id,
-    })
+    count_result = await db.execute(count_sql, params)
     total = count_result.scalar()
 
     # Fetch page
-    sql = text("""
+    fetch_params = {**params, "limit": per_page, "offset": offset}
+    sql = text(f"""
         SELECT
             h.hadith_id,
             h.book_id,
@@ -401,18 +406,12 @@ async def get_book_hadiths(
             g.bn_text as grade_text_bn
         FROM hadiths h
         LEFT JOIN grades g ON g.grade_id = h.grade_id
-        WHERE h.book_id = :book_id
-          AND (:chapter_id IS NULL OR h.chapter_id = :chapter_id)
+        WHERE {where_clause}
         ORDER BY h.hadith_number
         LIMIT :limit OFFSET :offset
     """)
 
-    result = await db.execute(sql, {
-        "book_id": book_id,
-        "chapter_id": chapter_id,
-        "limit": per_page,
-        "offset": offset,
-    })
+    result = await db.execute(sql, fetch_params)
 
     rows = [dict(row._mapping) for row in result.fetchall()]
 
